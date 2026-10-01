@@ -171,7 +171,7 @@ Servo fingers[NUM_SERVOS];
 // otherwise close when the others open). Must have NUM_SERVOS entries.
 const bool SERVO_INVERTED[] = {false, false, false, false, false, false};
 
-const int LED_PIN = 12; // optional status LED. Remove if unused.
+const int LED_PIN = 13; // optional status LED. Remove if unused.
 
 // ============================================================
 // EMG ACQUISITION CONFIG
@@ -214,9 +214,9 @@ const float MIN_DEADBAND_RATIO         = 0.10;  // deadband is at least 10% of b
 const float MIN_DEADBAND_ABS           = 1.0;   // ...and at least this (in envelope units)
 
 const int  MVC_REPS            = 3;
-const unsigned long MVC_GETREADY_MS = 1000;
-const unsigned long MVC_REP_MS      = 1500;
-const unsigned long MVC_REST_MS     = 2000;
+const unsigned long MVC_GETREADY_MS = 3000;
+const unsigned long MVC_REP_MS      = 4500;
+const unsigned long MVC_REST_MS     = 6000;
 
 // If the MVC median isn't at least this many times the baseline threshold, the
 // signal is probably bad (electrode contact, placement) and calibration restarts.
@@ -673,7 +673,7 @@ void loop() {
 
   // Compact log line (~45 chars, fits in the 64-byte Serial TX buffer so
   // print() doesn't block and cause dropped EMG samples).
-  if (ENABLE_LOG && millis() - next_log >= LOG_RATE) {
+  if (ENABLE_LOG && millis() - next_log >= LOG_RATE && state==4) {
     next_log = millis();
     Serial.print(F("S:")); Serial.print((int)state);
     Serial.print(F(" E:")); Serial.print((long)smoothedValue);
