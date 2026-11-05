@@ -6,8 +6,9 @@
   WHAT THIS DOES
   --------------
   Reads a muscle (EMG) sensor at 1 kHz, filters it, and turns your forearm
-  muscle effort into a proportional servo angle (0..MAX_ANGLE) that drives
-  all finger servos together. On power-up it calibrates itself in two steps:
+  muscle effort into an OPEN / CLOSED servo command (0 or MAX_ANGLE) that drives
+  all finger servos together. It closes when you flex past CLOSE_PERCENT of your
+  calibrated max and opens again when you relax below OPEN_PERCENT. On power-up it calibrates itself in two steps:
 
     1. BASELINE  (~4 s)   Relax your arm completely.
     2. MVC       (3 reps) Flex as hard as you can when told (LED cues below).
@@ -163,13 +164,13 @@
 // ============================================================
 #define SensorInputPin A0
 
-const int ACTIVE_SERVO_PINS[] = {2, 3, 4, 5, 6, 7};
+const int ACTIVE_SERVO_PINS[] = {2, 3};
 const int NUM_SERVOS = sizeof(ACTIVE_SERVO_PINS) / sizeof(ACTIVE_SERVO_PINS[0]);
 Servo fingers[NUM_SERVOS];
 
 // Set an entry to true if that finger's servo is mounted mirrored (it would
 // otherwise close when the others open). Must have NUM_SERVOS entries.
-const bool SERVO_INVERTED[] = {false, false, false, false, false, false};
+const bool SERVO_INVERTED[] = {false, false};
 
 const int LED_PIN = 12; // optional status LED. Remove if unused.
 
@@ -194,10 +195,10 @@ bool newSample = false; // true only on loop passes where a fresh EMG sample was
 // ============================================================
 // SERVO MOTION CONFIG
 // ============================================================
-const unsigned long SERVO_UPDATE_RATE = 5; // ms per 1-degree step
+const unsigned long SERVO_UPDATE_RATE = 3; // ms per 1-degree step
 int current_angle = 0;
 int target_angle = 0;
-const int MAX_ANGLE = 120; // match your 3D printed hand's full-close angle
+const int MAX_ANGLE = 180; // full-close angle (make sure the hand can physically reach this)
 
 // ============================================================
 // CALIBRATION CONFIG
@@ -214,14 +215,14 @@ const float MIN_DEADBAND_RATIO         = 0.10;  // deadband is at least 10% of b
 const float MIN_DEADBAND_ABS           = 1.0;   // ...and at least this (in envelope units)
 
 const int  MVC_REPS            = 3;
-const unsigned long MVC_GETREADY_MS = 1000;
-const unsigned long MVC_REP_MS      = 1500;
+const unsigned long MVC_GETREADY_MS = 1500; // a bit longer so people have time to react
+const unsigned long MVC_REP_MS      = 2000; // a bit longer so slower/weaker flexes still hit their peak
 const unsigned long MVC_REST_MS     = 2000;
 
 // If the MVC median isn't at least this many times the baseline threshold, the
 // signal is probably bad (electrode contact, placement) and calibration restarts.
 // Lower it if you legitimately have a weak signal.
-const float MVC_MIN_RATIO = 3.0;
+const float MVC_MIN_RATIO = 1.5;
 
 // ============================================================
 // RUNTIME (POST-CALIBRATION) STATE
@@ -253,7 +254,15 @@ const float MVC_FLOOR_RATIO   = 0.4; // runtime max never decays below this frac
 const float MVC_CEILING_RATIO = 1.5; // ...and never jumps above this (so one cable tug can't wreck it)
 const float MIN_SPAN          = 1.0; // smallest usable (max - lower edge); below this, output is 0
 
-const float SENSITIVITY_CURVE = 0.35; // power curve exponent (lower = more low-end sensitivity)
+// 0.5 = square root. The envelope is squared EMG (a power), so sqrt turns it back into
+// roughly "force", which makes the percentages below behave like real effort levels.
+const float SENSITIVITY_CURVE = 0.5;
+
+// Open/closed thresholds, as % of your calibrated range (flexPercentage).
+// Two different numbers = hysteresis: the hand won't flicker between states.
+const int CLOSE_PERCENT = 50; // flex past this -> hand closes fully
+const int OPEN_PERCENT  = 10; // relax below this -> hand opens fully
+bool handClosed = false;
 
 int flexPercentage = 0;
 
@@ -398,6 +407,7 @@ void enterState(SystemState newState) {
       baselineSampleStride = (BASELINE_DURATION - SETTLE_MS) / RESERVOIR_SIZE;
       if (baselineSampleStride < 1) baselineSampleStride = 1;
       target_angle = 0; // ensure hand is/returns to safe open position during calibration
+      handClosed = false;
       flexPercentage = 0;
       Serial.println(F("=== CALIBRATION: relax your arm ==="));
       break;
@@ -561,12 +571,13 @@ void finishMvcCalibration() {
 }
 
 // ============================================================
-// ACTIVE MODE: continuous proportional control (runs once per EMG sample)
-// 1) Lower edge = runtime baseline + deadband, so resting noise = 0 motion.
-// 2) Normalize smoothedValue between lower edge and runtime max (0..1).
-// 3) Apply the power curve (pow(x, 0.35)) for extra low-end sensitivity.
-// 4) Map straight to target_angle - continuous, not stepped.
-// 5) Run background drift correction.
+// ACTIVE MODE: open / closed with hysteresis (runs once per EMG sample)
+// 1) Lower edge = runtime baseline + deadband, so resting noise = 0.
+// 2) Normalize smoothedValue between lower edge and runtime max (0..1),
+//    then sqrt it so the percentage tracks effort (flexPercentage 0..100).
+// 3) Flex >= CLOSE_PERCENT -> closed. Flex <= OPEN_PERCENT -> open.
+//    In between, keep whatever state it was already in.
+// 4) Run background drift correction.
 // ============================================================
 void runActiveControl() {
   float lowerEdge = runtimeBaseline + calDeadband;
@@ -581,7 +592,10 @@ void runActiveControl() {
   flexPercentage = (int)(pow(normalized, SENSITIVITY_CURVE) * 100.0);
   flexPercentage = constrain(flexPercentage, 0, 100);
 
-  target_angle = (int)((flexPercentage / 100.0) * MAX_ANGLE);
+  if (flexPercentage >= CLOSE_PERCENT) handClosed = true;
+  else if (flexPercentage <= OPEN_PERCENT) handClosed = false;
+
+  target_angle = handClosed ? MAX_ANGLE : 0;
 
   backgroundRecalibrate(normalized);
 }
